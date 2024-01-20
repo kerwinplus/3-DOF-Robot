@@ -1,0 +1,515 @@
+#include <PS4BT.h>
+#include <usbhub.h>
+#include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+
+// Satisfy the IDE, which needs to see the include statment in the ino too.
+#ifdef dobogusinclude
+#include <spi4teensy3.h>
+#endif
+#include <SPI.h>
+
+const float r = 0.007843137; // r = 1/(255/2)
+const float RAD2DEG = 57.29578; // RAD2DEG = 180/pi
+
+
+USB Usb;
+BTD Btd(&Usb); // You have to create the Bluetooth Dongle instance like so
+PS4BT PS4(&Btd);
+//PS4BT PS4(&Btd, PAIR);
+Servo servo_clamp, servo_gripper;
+Servo servo_rotatearm;
+Servo servo_classify_r, servo_classify_l;
+Servo servo_rising_r, servo_rising_l;
+Adafruit_PWMServoDriver longarm = Adafruit_PWMServoDriver();
+Adafruit_PWMServoDriver shortarm = Adafruit_PWMServoDriver();
+
+bool printAngle, printTouch;
+uint8_t oldL2Value, oldR2Value;
+float pos_clamp=105, pos_gripper=90;
+float pos_rotatearm=154, angle_rotatearm, pos_longarm=97.6, pos_shortarm=29;
+const int rightwheel_in1=35, rightwheel_in2=37, leftwheel_in3=43, leftwheel_in4=45;
+const int rightwheel_ena=2, leftwheel_enb=3;
+const int motor_mini=50, motor_max=250;
+int motor_power,motor_diff;
+#define SERVOMIN  140 // this is the 'minimum' pulse length count (out of 4096)
+#define SERVOMAX  560 // this is the 'maximum' pulse length count (out of 4096)
+
+
+
+
+
+void setup() {
+  Serial.begin(115200);
+#if !defined(__MIPSEL__)
+  while (!Serial); // Wait for serial port to connect - used on Leonardo, Teensy and other boards with built-in USB CDC serial connection
+#endif
+  if (Usb.Init() == -1) {
+    Serial.print(F("\r\nOSC did not start"));
+    while (1); // Halt
+  }
+  Serial.print(F("\r\nPS4 Bluetooth Library Started"));
+
+  longarm.begin();
+  longarm.setPWMFreq(60);
+  shortarm.begin();
+  shortarm.setPWMFreq(60);
+  
+  servo_clamp.attach(13,600,2400);
+  servo_gripper.attach(12,600,2400);
+  servo_rotatearm.attach(11,600,2400);
+  servo_rising_r.attach(31,500,2500);
+  servo_rising_l.attach(33,500,2500);
+  servo_classify_r.attach(5,600,2400);
+  servo_classify_l.attach(4,600,2400);
+  pinMode(rightwheel_ena,OUTPUT);
+  pinMode(leftwheel_enb,OUTPUT);
+  pinMode(rightwheel_in1,OUTPUT);
+  pinMode(rightwheel_in2,OUTPUT);
+  pinMode(leftwheel_in3,OUTPUT);
+  pinMode(leftwheel_in4,OUTPUT);    
+  longarm.setPWM(0,0,angletopulse(pos_longarm));
+  shortarm.setPWM(1,0,angletopulse(pos_shortarm));
+  servo_rotatearm.write(pos_rotatearm);
+  servo_gripper.write(pos_gripper);
+  servo_clamp.write(pos_clamp);
+  servo_classify_r.write(30);
+  servo_classify_l.write(10);
+}
+
+void loop() {
+  Usb.Task();
+
+  if (PS4.connected()) {
+
+//Disconnect
+    if (PS4.getButtonClick(PS)) {
+      Serial.print(F("\r\nDisconnect"));
+      PS4.disconnect();
+    }
+    
+//Arm
+    if(PS4.getAnalogHat(LeftHatX) > 137 || PS4.getAnalogHat(LeftHatX) < 117 || PS4.getAnalogHat(LeftHatY) > 137 || PS4.getAnalogHat(LeftHatY) < 117){
+      angle_rotatearm = Y_angle(PS4.getAnalogHat(LeftHatX),PS4.getAnalogHat(LeftHatY))-45;
+      Serial.print("angle_rotatearm: ");
+      Serial.println(angle_rotatearm);
+
+      if(PS4.getAnalogButton(L2) || PS4.getAnalogButton(R2)){   //rotatearm-quick
+        if(angle_rotatearm<=0 && angle_rotatearm>=-90){  //right rotate-quick
+          pos_rotatearm -= 0.05*2;
+          servo_rotatearm.write(pos_rotatearm);
+          Serial.print("pos_rotatearm: ");
+          Serial.println(pos_rotatearm);
+        }
+        if(angle_rotatearm<=180 && angle_rotatearm>=90){  //left rotate-quick
+          pos_rotatearm += 0.05*2;
+          servo_rotatearm.write(pos_rotatearm);
+          Serial.print("pos_rotatearm: ");
+          Serial.println(pos_rotatearm);
+        }
+      }
+      else{
+        if((angle_rotatearm<90 && angle_rotatearm>0)){     //Foreward
+          if((pos_longarm>=40 && pos_longarm<=105) && (pos_shortarm>=20 && pos_shortarm<=75)){   
+            pos_longarm-=(-PS4.getAnalogHat(LeftHatY)+255/2) * 0.0001428*3;
+            pos_shortarm-=(-PS4.getAnalogHat(LeftHatY)+255/2) * 0.0001*3;
+            longarm.setPWM(0,0,angletopulse(pos_longarm));
+            shortarm.setPWM(1,0,angletopulse(pos_shortarm));
+            //delay(10);
+            Serial.print("pos_longarm: ");
+            Serial.print(pos_longarm);
+            Serial.print("\tpos_shortarm: ");
+            Serial.println(pos_shortarm);
+          }
+        }
+        if((angle_rotatearm<225 && angle_rotatearm>180) || (angle_rotatearm<-90 && angle_rotatearm>-135)){     //Backward
+          if((pos_longarm>=30 && pos_longarm<=85) && (pos_shortarm>=20 && pos_shortarm<=74)){    
+            pos_longarm+=PS4.getAnalogHat(LeftHatY) * 0.0001428*3;
+            pos_shortarm+=PS4.getAnalogHat(LeftHatY) * 0.0001*3;
+            longarm.setPWM(0,0,angletopulse(pos_longarm));
+            shortarm.setPWM(1,0,angletopulse(pos_shortarm));
+            //delay(10);
+            Serial.print("\rpos_longarm: ");
+            Serial.print(pos_longarm);
+            Serial.print("\tpos_shortarm: ");
+            Serial.println(pos_shortarm);
+          }
+          if(pos_longarm>=84 && pos_longarm<=100){  
+            pos_longarm+=PS4.getAnalogHat(LeftHatY) * 0.0001428*3;
+            longarm.setPWM(0,0,angletopulse(pos_longarm));
+            Serial.print("\rpos_longarm: ");
+            Serial.print(pos_longarm);
+          }
+        }
+        if(angle_rotatearm<=0 && angle_rotatearm>=-90){  //right rotate-slow
+          pos_rotatearm -= 0.05;
+          servo_rotatearm.write(pos_rotatearm);
+          Serial.print("pos_rotatearm: ");
+          Serial.println(pos_rotatearm);
+        }
+        if(angle_rotatearm<=180 && angle_rotatearm>=90){  //left rotate-slow
+          pos_rotatearm += 0.05;
+          servo_rotatearm.write(pos_rotatearm);
+          Serial.print("pos_rotatearm: ");
+          Serial.println(pos_rotatearm);
+        }
+        if(pos_rotatearm>180)
+          pos_rotatearm=180;
+        if(pos_rotatearm<0)
+          pos_rotatearm=0;
+      }
+    }
+    
+//microcontrol
+    if (PS4.getButtonPress(UP) || PS4.getButtonPress(DOWN)) {
+      if(pos_longarm>=20 && pos_longarm<=105){
+        if (PS4.getButtonPress(UP)) {   //longarm-clockwise
+          pos_longarm-=0.05;
+          longarm.setPWM(0,0,angletopulse(pos_longarm));
+//          delay(20);
+          Serial.print("\rpos_longarm: ");
+          Serial.println(pos_longarm);
+        } 
+        if (PS4.getButtonPress(DOWN)) {   //longtarm-counterclockwise
+          pos_longarm+=0.05;
+          longarm.setPWM(0,0,angletopulse(pos_longarm));
+//          delay(20);
+          Serial.print("\rpos_longarm: ");
+          Serial.println(pos_longarm);
+        }
+      }        
+      else{
+        if(pos_longarm<20)
+        pos_longarm=20;
+        if(pos_longarm>105)
+        pos_longarm=105;
+      }
+    }
+    
+    if (PS4.getButtonPress(RIGHT)||PS4.getButtonPress(LEFT)) {
+      if(pos_shortarm>=20 && pos_shortarm<=75){
+        if (PS4.getButtonPress(RIGHT)) {
+          pos_shortarm-=0.05;
+          shortarm.setPWM(1,0,angletopulse(pos_shortarm));
+          delay(20);
+          Serial.print("pos_shortarm: ");
+          Serial.println(pos_shortarm);
+        }
+        if (PS4.getButtonPress(LEFT)) {   //shortarm-counterclockwise
+          pos_shortarm+=0.05;
+          shortarm.setPWM(1,0,angletopulse(pos_shortarm));
+          delay(20);
+          Serial.print("pos_shortarm: ");
+          Serial.println(pos_shortarm);
+        } 
+      }
+      else{
+        if(pos_shortarm<20)
+        pos_shortarm=20;
+        if(pos_shortarm>75)
+        pos_shortarm=75;
+      }
+    }
+
+
+    
+//RightHAT-wheel
+    if(PS4.getAnalogHat(RightHatY) <147 && PS4.getAnalogHat(RightHatY) > 107 && PS4.getAnalogHat(RightHatX) < 137 && PS4.getAnalogHat(RightHatX) > 117){
+      digitalWrite(rightwheel_in1,HIGH);
+      digitalWrite(rightwheel_in2,HIGH);
+      digitalWrite(leftwheel_in3,HIGH);
+      digitalWrite(leftwheel_in4,HIGH);
+      analogWrite(leftwheel_enb,200);
+      analogWrite(rightwheel_ena,200);
+    }
+    if(PS4.getAnalogHat(RightHatX) > 137 || PS4.getAnalogHat(RightHatX) < 117 || PS4.getAnalogHat(RightHatY) > 137 || PS4.getAnalogHat(RightHatY) < 117){
+       //PWM_BLOCK
+      if(PS4.getAnalogHat(RightHatY) <107 ){
+        motor_power=map(PS4.getAnalogHat(RightHatY),117,0,motor_mini,motor_max);
+      }
+      else if(PS4.getAnalogHat(RightHatY) > 147){
+        motor_power=map(PS4.getAnalogHat(RightHatY),147,255,(-1)*motor_mini,(-1)*motor_max);
+      }
+      else{
+        motor_power=0;
+      }
+
+
+      if(PS4.getAnalogHat(RightHatX) < 117){
+        motor_diff=map(PS4.getAnalogHat(RightHatX),0,117,abs(motor_power)*(-1),0); 
+      }
+      else if(PS4.getAnalogHat(RightHatX) > 137){
+        motor_diff=map(PS4.getAnalogHat(RightHatX),137,225,0,abs(motor_power));
+      }
+      else{
+        motor_diff=0;
+      }
+      
+      if(motor_power > 0){
+        digitalWrite(rightwheel_in1,HIGH);
+        digitalWrite(rightwheel_in2,LOW);
+        digitalWrite(leftwheel_in3,HIGH);
+        digitalWrite(leftwheel_in4,LOW);
+        if(motor_diff < 0){                                 //leftturn
+          analogWrite(rightwheel_ena,motor_power);
+          analogWrite(leftwheel_enb,motor_power + motor_diff);  
+        }
+        else if(motor_diff > 0){                            //rightturn
+          analogWrite(rightwheel_ena,motor_power);           
+          analogWrite(leftwheel_enb,motor_power -motor_diff); 
+        }
+        else{
+          analogWrite(rightwheel_ena,motor_power);
+          analogWrite(leftwheel_enb,motor_power);
+        }
+      }
+        
+      else if(motor_power < 0){
+        digitalWrite(rightwheel_in1,LOW);
+        digitalWrite(rightwheel_in2,HIGH);
+        digitalWrite(leftwheel_in3,LOW);
+        digitalWrite(leftwheel_in4,HIGH);
+        if(motor_diff > 0){
+          analogWrite(rightwheel_ena,abs(motor_power+motor_diff));
+          analogWrite(leftwheel_enb,abs(motor_power)); 
+        }
+        else if(motor_diff < 0)
+          analogWrite(rightwheel_ena,abs(motor_power));
+          
+        analogWrite(leftwheel_enb,abs(motor_power-motor_diff)); 
+      }
+      
+      else{
+        analogWrite(rightwheel_ena,abs(motor_power));
+        analogWrite(leftwheel_enb,abs(motor_power));
+      }
+
+        //CIRCLE
+
+      if(PS4.getAnalogHat(RightHatY) > 107 && PS4.getAnalogHat(RightHatY) < 147){
+        if(PS4.getAnalogHat(RightHatX) < 117 && PS4.getAnalogHat(RightHatX) > 50){
+          digitalWrite(rightwheel_in1,HIGH);
+          digitalWrite(rightwheel_in2,LOW);
+          digitalWrite(leftwheel_in3,LOW);
+          digitalWrite(leftwheel_in4,HIGH);
+          analogWrite(leftwheel_enb,230);
+          analogWrite(rightwheel_ena,230);
+        }
+        else if(PS4.getAnalogHat(RightHatX) <= 50){
+          digitalWrite(rightwheel_in1,HIGH);
+          digitalWrite(rightwheel_in2,LOW);
+          digitalWrite(leftwheel_in3,LOW);
+          digitalWrite(leftwheel_in4,HIGH);
+          analogWrite(leftwheel_enb,80);
+          analogWrite(rightwheel_ena,230);
+        }
+        else if(PS4.getAnalogHat(RightHatX) > 137 && PS4.getAnalogHat(RightHatX) < 205){
+          digitalWrite(rightwheel_in1,LOW);
+          digitalWrite(rightwheel_in2,HIGH);
+          digitalWrite(leftwheel_in3,HIGH);
+          digitalWrite(leftwheel_in4,LOW);
+          analogWrite(leftwheel_enb,230);
+          analogWrite(rightwheel_ena,230);
+        }
+        else if(PS4.getAnalogHat(RightHatX) > 205 ){
+          digitalWrite(rightwheel_in1,LOW);
+          digitalWrite(rightwheel_in2,HIGH);
+          digitalWrite(leftwheel_in3,HIGH);
+          digitalWrite(leftwheel_in4,LOW);
+          analogWrite(leftwheel_enb,230);
+          analogWrite(rightwheel_ena,80);
+        }    
+      }  
+
+      Serial.print(F("\tRightHatX: "));
+      Serial.print(PS4.getAnalogHat(RightHatX));
+      Serial.print(F("\tRightHatY: "));
+      Serial.println(PS4.getAnalogHat(RightHatY));
+    }
+
+//    if (PS4.getAnalogButton(L2) != oldL2Value || PS4.getAnalogButton(R2) != oldR2Value) // Only write value if it's different
+//      PS4.setRumbleOn(PS4.getAnalogButton(L2), PS4.getAnalogButton(R2));
+//    oldL2Value = PS4.getAnalogButton(L2);
+//    oldR2Value = PS4.getAnalogButton(R2);
+
+//L2,R2-Clamp
+    if (PS4.getAnalogButton(L2) && pos_clamp<=105){ // These are the only analog buttons on the PS4 controller
+        pos_clamp += PS4.getAnalogButton(L2) * 0.0002;
+        servo_clamp.write(pos_clamp);
+        Serial.print(F("L2: "));
+        Serial.println(pos_clamp);
+    }
+    if (PS4.getAnalogButton(R2) && pos_clamp>=0){
+        pos_clamp -= PS4.getAnalogButton(R2) * 0.0002;
+        servo_clamp.write(pos_clamp);
+        Serial.print(F("R2: "));
+        Serial.println(pos_clamp);
+    }
+
+//Gripper-rotate    
+    if (PS4.getButtonPress(L1) && pos_gripper>=0 && pos_gripper<=180.2){
+      pos_gripper -= 0.05;
+      servo_gripper.write(pos_gripper);
+      Serial.print(F("L1: "));
+      Serial.println(pos_gripper,2);
+    }
+    if (PS4.getButtonPress(R1) && pos_gripper>=-0.2 && pos_gripper<=180){
+      pos_gripper += 0.05;
+      servo_gripper.write(pos_gripper);
+      Serial.print(F("R1: "));
+      Serial.println(pos_gripper,2);
+    }
+
+    
+//classify
+    if(PS4.getButtonPress(CROSS) || PS4.getButtonPress(SQUARE) || PS4.getButtonPress(TRIANGLE) || PS4.getButtonPress(CIRCLE)){
+      if(PS4.getButtonPress(CROSS) || PS4.getButtonPress(SQUARE)){
+       while(pos_longarm>95 || pos_longarm<90 || pos_shortarm>65.2 || pos_shortarm<64){ //arm
+          if(pos_longarm>95)
+          pos_longarm-=0.05*2;
+          if(pos_longarm<90)
+          pos_longarm+=0.05*2;
+          if(pos_shortarm>65.2)
+          pos_shortarm-=0.05*2;
+          if(pos_shortarm<64)
+          pos_shortarm+=0.05*2;
+          Serial.print("pos_longarm: ");
+          Serial.println(pos_longarm);
+          Serial.print("pos_shortarm: ");
+          Serial.println(pos_shortarm); 
+          longarm.setPWM(0,0,angletopulse(pos_longarm));
+          shortarm.setPWM(1,0,angletopulse(pos_shortarm));
+          //delay(20);
+        }
+        if(PS4.getButtonPress(CROSS)){
+          servo_classify_r.write(30);
+          Serial.println("Cross");
+        }
+        if(PS4.getButtonPress(SQUARE)){
+          servo_classify_r.write(70);
+          Serial.println("Square");
+        }
+      }
+      else if(PS4.getButtonPress(TRIANGLE) || PS4.getButtonPress(CIRCLE)){
+        while((pos_longarm>72 || pos_longarm<71) || (pos_shortarm>63 || pos_shortarm<62)){ //arm
+          if(pos_longarm>72)
+          pos_longarm-=0.05*3;
+          if(pos_longarm<71)
+          pos_longarm+=0.05*3;
+          if(pos_shortarm>63)
+          pos_shortarm-=0.05*3;
+          if(pos_shortarm<62)
+          pos_shortarm+=0.05*3;
+          Serial.print("pos_longarm: ");
+          Serial.println(pos_longarm);
+          Serial.print("pos_shortarm: ");
+          Serial.println(pos_shortarm); 
+          longarm.setPWM(0,0,angletopulse(pos_longarm));
+          shortarm.setPWM(1,0,angletopulse(pos_shortarm));  
+          //delay(20);
+        }
+        if(PS4.getButtonPress(TRIANGLE)){
+          servo_classify_l.write(10);
+          Serial.println("Traingle");
+        }
+        if(PS4.getButtonPress(CIRCLE)){
+          servo_classify_l.write(45);
+          Serial.println("Circle");
+        }
+      }
+      while(154 > pos_rotatearm){
+        pos_rotatearm += 0.05*2;
+        //delay(20);
+        servo_rotatearm.write(pos_rotatearm);
+        Serial.print("pos_rotatearm: ");
+        Serial.println(pos_rotatearm);
+      }
+      while(154< pos_rotatearm){
+        pos_rotatearm -= 0.05*2;
+        servo_rotatearm.write(pos_rotatearm);
+        //delay(20);
+        Serial.print("pos_rotatearm: ");
+        Serial.println(pos_rotatearm);
+      }
+      while(pos_clamp<105){
+        pos_clamp+=1;
+        servo_clamp.write(pos_clamp);
+      }
+    }
+
+
+
+//rising    
+    if (PS4.getButtonClick(OPTIONS)) {
+      Serial.print(F("\r\nTouchpad"));
+      printTouch = !printTouch;
+    }
+    if (printTouch) { // Print the x, y coordinates of the touchpad
+      if (PS4.isTouching(0) || PS4.isTouching(1)) // Print newline and carriage return if any of the fingers are touching the touchpad
+        Serial.print(F("\r\n"));
+      for (uint8_t i = 0; i < 2; i++) { // The touchpad track two fingers
+        if (PS4.isTouching(i)) { // Print the position of the finger if it is touching the touchpad
+          Serial.print(F("X")); Serial.print(i + 1); Serial.print(F(": "));
+          Serial.print(PS4.getX(i));
+          Serial.print(F("\tY")); Serial.print(i + 1); Serial.print(F(": "));
+          Serial.print(PS4.getY(i));
+          Serial.print(F("\t"));
+          int x = PS4.getX(i);
+          int y = PS4.getY(i);
+          int dcangle_6 = 95;
+          int dcangle_5 = 85;
+          if(x<1000 && y < 500){
+              servo_rising_r.write(dcangle_6);
+              servo_rising_l.write(dcangle_5-1);
+          }
+          else if(x > 1000 && y < 500){
+              servo_rising_r.write(90);
+              servo_rising_l.write(90);
+          }
+          else if(x<1000 && y > 500){
+              servo_rising_r.write(90);
+              servo_rising_l.write(dcangle_6);
+          }
+          else if(x>1000 && y > 500){
+              servo_rising_r.write(dcangle_5
+              );
+              servo_rising_l.write(90);
+          }
+        }
+      }
+    }
+  }
+}
+
+void setServoPulse(uint8_t n, double pulse) {
+  double pulselength;
+  
+  pulselength = 1000000;   // 1,000,000 us per second
+  pulselength /= 60;   // 60 Hz
+  Serial.print(pulselength); Serial.println(" us per period"); 
+  pulselength /= 4096;  // 12 bits of resolution
+  Serial.print(pulselength); Serial.println(" us per bit"); 
+  pulse *= 1000000;  // convert to us
+  pulse /= pulselength;
+  Serial.println(pulse);
+  longarm.setPWM(n, 0, pulse);
+  shortarm.setPWM(n, 0, pulse);
+}
+
+int angletopulse (float ang){
+  int pulse = map(ang,0, 180, SERVOMIN, SERVOMAX);
+  return pulse;
+}
+
+float Y_angle(float x, float y){
+  if(x>127.5){
+    y=-(y-127.5);
+    return asin(y*r)*RAD2DEG;
+  }
+  else{
+    y=-(y-127.5);
+    return 180-asin(y*r)*RAD2DEG;
+  }
+}
